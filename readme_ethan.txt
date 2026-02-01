@@ -1,3 +1,7 @@
+https://larmoire.org/jellyfish/?utm_source=openai
+
+
+
 ethan@ethan-B360M-DS3H:~/lab_rtp$ ffmpeg -re -i ~/Downloads/jellyfish-10-mbps-hd-hevc.mkv -an -c:v copy -bsf:v hevc_mp4toannexb -f rtp -sdp_file out.sdp rtp://localhost:5004
 
 >> Re encoding routine..
