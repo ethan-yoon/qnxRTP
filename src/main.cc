@@ -1,17 +1,24 @@
 #include <uvgrtp/lib.hh>
 
 #include <algorithm>
+#include <arpa/inet.h>
 #include <array>
+#include <cerrno>
 #include <cstdint>
+#include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <netinet/in.h>
 #include <string>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <vector>
 
 // Set to 1 if incoming RTP payloads have an 8-byte timestamp prefix.
 #ifndef HAS_TS_PREFIX
-#define HAS_TS_PREFIX 1
+#define HAS_TS_PREFIX 0
 #endif
 
 // 1 = big-endian, 0 = little-endian
@@ -230,20 +237,395 @@ uint64_t read_ts_u64(const uint8_t* p) {
 #endif
     return v;
 }
+
+int create_rtcp_socket(uint16_t port) {
+    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        std::cerr << "Failed to create RTCP socket on port " << port << ": "
+                  << std::strerror(errno) << "\n";
+        return -1;
+    }
+
+    int opt = 1;
+    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        std::cerr << "Failed to bind RTCP socket on port " << port << ": "
+                  << std::strerror(errno) << "\n";
+        ::close(fd);
+        return -1;
+    }
+
+    int flags = ::fcntl(fd, F_GETFL, 0);
+    if (flags >= 0) {
+        (void)::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    return fd;
+}
+
+uint16_t read_be16(const uint8_t* p);
+uint32_t read_be32(const uint8_t* p);
+
+void print_hex_preview(const uint8_t* data, size_t len, size_t max_bytes = 24) {
+    if (!data || len == 0) {
+        std::cout << "(empty)";
+        return;
+    }
+
+    size_t n = std::min(len, max_bytes);
+    std::cout << std::hex << std::setfill('0');
+    for (size_t i = 0; i < n; ++i) {
+        std::cout << std::setw(2) << static_cast<unsigned int>(data[i]);
+        if (i + 1 < n) {
+            std::cout << " ";
+        }
+    }
+    if (len > n) {
+        std::cout << " ...";
+    }
+    std::cout << std::dec;
+}
+
+void log_rtp_ext_rfc8285_one_byte(const uint8_t* data, size_t len) {
+    std::cout << "[RTP][EXT][8285-one-byte] entries:\n";
+    size_t off = 0;
+    size_t idx = 0;
+    while (off < len) {
+        uint8_t b = data[off];
+        if (b == 0) {
+            ++off;
+            continue;
+        }
+
+        uint8_t id = (b >> 4) & 0x0f;
+        uint8_t l = (b & 0x0f) + 1; // encoded as len-1
+        ++off;
+
+        if (id == 15) {
+            std::cout << "[RTP][EXT][8285-one-byte]  id=15(reserved), stop\n";
+            return;
+        }
+
+        if (off + l > len) {
+            std::cout << "[RTP][EXT][8285-one-byte]  malformed: id=" << static_cast<unsigned int>(id)
+                      << " len=" << static_cast<unsigned int>(l)
+                      << " remain=" << (len - off) << "\n";
+            return;
+        }
+
+        std::cout << "[RTP][EXT][8285-one-byte]  [" << idx
+                  << "] id=" << static_cast<unsigned int>(id)
+                  << " len=" << static_cast<unsigned int>(l)
+                  << " data=";
+        print_hex_preview(&data[off], l, 16);
+        std::cout << "\n";
+
+        off += l;
+        ++idx;
+    }
+}
+
+void log_rtp_ext_rfc8285_two_byte(const uint8_t* data, size_t len, uint8_t appbits) {
+    std::cout << "[RTP][EXT][8285-two-byte] appbits=" << static_cast<unsigned int>(appbits) << " entries:\n";
+    size_t off = 0;
+    size_t idx = 0;
+    while (off < len) {
+        if (data[off] == 0) {
+            ++off;
+            continue;
+        }
+        if (off + 2 > len) {
+            std::cout << "[RTP][EXT][8285-two-byte]  malformed header remain=" << (len - off) << "\n";
+            return;
+        }
+
+        uint8_t id = data[off];
+        uint8_t l = data[off + 1];
+        off += 2;
+
+        if (off + l > len) {
+            std::cout << "[RTP][EXT][8285-two-byte]  malformed: id=" << static_cast<unsigned int>(id)
+                      << " len=" << static_cast<unsigned int>(l)
+                      << " remain=" << (len - off) << "\n";
+            return;
+        }
+
+        std::cout << "[RTP][EXT][8285-two-byte]  [" << idx
+                  << "] id=" << static_cast<unsigned int>(id)
+                  << " len=" << static_cast<unsigned int>(l)
+                  << " data=";
+        print_hex_preview(&data[off], l, 16);
+        std::cout << "\n";
+
+        off += l;
+        ++idx;
+    }
+}
+
+void log_rtp_extension(const uvgrtp::frame::rtp_frame* frame) {
+    if (!frame || !frame->ext) {
+        return;
+    }
+
+    const uint16_t profile = frame->ext->type;
+    const size_t ext_len = frame->ext->len;
+    const uint8_t* ext_data = frame->ext->data;
+
+    std::cout << "[RTP][EXT] profile=0x"
+              << std::hex << std::setw(4) << std::setfill('0') << profile
+              << std::dec << " len=" << ext_len << " bytes\n";
+
+    if (!ext_data || ext_len == 0) {
+        std::cout << "[RTP][EXT] empty\n";
+        return;
+    }
+
+    if (profile == 0xBEDE) {
+        log_rtp_ext_rfc8285_one_byte(ext_data, ext_len);
+        return;
+    }
+
+    if ((profile & 0xFFF0) == 0x1000) {
+        uint8_t appbits = static_cast<uint8_t>(profile & 0x000f);
+        log_rtp_ext_rfc8285_two_byte(ext_data, ext_len, appbits);
+        return;
+    }
+
+    size_t words = ext_len / 4;
+    size_t rem = ext_len % 4;
+    std::cout << "[RTP][EXT][3550] words=" << words << " rem=" << rem << "\n";
+
+    const size_t max_words_to_log = std::min<size_t>(words, 8);
+    for (size_t i = 0; i < max_words_to_log; ++i) {
+        uint32_t w = read_be32(&ext_data[i * 4]);
+        std::cout << "[RTP][EXT][3550]  word[" << i << "]=0x"
+                  << std::hex << std::setw(8) << std::setfill('0') << w
+                  << std::dec << "\n";
+    }
+    if (words > max_words_to_log) {
+        std::cout << "[RTP][EXT][3550]  ... (" << (words - max_words_to_log) << " more words)\n";
+    }
+    if (rem > 0) {
+        std::cout << "[RTP][EXT][3550]  tail=";
+        print_hex_preview(&ext_data[words * 4], rem, rem);
+        std::cout << "\n";
+    }
+}
+
+uint16_t read_be16(const uint8_t* p) {
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
+}
+
+uint32_t read_be32(const uint8_t* p) {
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
+const char* rtcp_pt_name(uint8_t pt) {
+    switch (pt) {
+        case 200: return "SR";
+        case 201: return "RR";
+        case 202: return "SDES";
+        case 203: return "BYE";
+        case 204: return "APP";
+        case 205: return "RTPFB";
+        case 206: return "PSFB";
+        default: return "UNKNOWN";
+    }
+}
+
+void log_rtcp_packet_details(const uint8_t* pkt, size_t pkt_len, size_t idx) {
+    if (pkt_len < 4) {
+        std::cout << "[RTCP]   [" << idx << "] short packet len=" << pkt_len << "\n";
+        return;
+    }
+
+    uint8_t v = (pkt[0] >> 6) & 0x03;
+    bool padding = (pkt[0] & 0x20) != 0;
+    uint8_t count_or_fmt = pkt[0] & 0x1f;
+    uint8_t pt = pkt[1];
+
+    std::cout << "[RTCP]   [" << idx << "] "
+              << rtcp_pt_name(pt) << "(" << static_cast<unsigned int>(pt) << ")"
+              << " v=" << static_cast<unsigned int>(v)
+              << " p=" << (padding ? 1 : 0)
+              << " count/fmt=" << static_cast<unsigned int>(count_or_fmt)
+              << " len=" << pkt_len << "\n";
+
+    if (pt == 200) { // SR
+        if (pkt_len >= 28) {
+            uint32_t sender_ssrc = read_be32(&pkt[4]);
+            uint64_t ntp = (static_cast<uint64_t>(read_be32(&pkt[8])) << 32) | read_be32(&pkt[12]);
+            uint32_t rtp_ts = read_be32(&pkt[16]);
+            uint32_t pkt_count = read_be32(&pkt[20]);
+            uint32_t oct_count = read_be32(&pkt[24]);
+            std::cout << "[RTCP]     sender_ssrc=0x" << std::hex << sender_ssrc
+                      << " ntp=0x" << ntp
+                      << " rtp_ts=" << std::dec << rtp_ts
+                      << " sender_pkts=" << pkt_count
+                      << " sender_octets=" << oct_count
+                      << "\n";
+        }
+        return;
+    }
+
+    if (pt == 201) { // RR
+        if (pkt_len >= 8) {
+            uint32_t sender_ssrc = read_be32(&pkt[4]);
+            std::cout << "[RTCP]     sender_ssrc=0x" << std::hex << sender_ssrc
+                      << std::dec << " report_count=" << static_cast<unsigned int>(count_or_fmt)
+                      << "\n";
+        }
+        return;
+    }
+
+    if (pt == 202) { // SDES
+        if (pkt_len >= 8) {
+            uint32_t first_ssrc = read_be32(&pkt[4]);
+            std::cout << "[RTCP]     chunks=" << static_cast<unsigned int>(count_or_fmt)
+                      << " first_ssrc=0x" << std::hex << first_ssrc << std::dec << "\n";
+        }
+        return;
+    }
+
+    if (pt == 203) { // BYE
+        if (pkt_len >= 8) {
+            uint32_t first_ssrc = read_be32(&pkt[4]);
+            std::cout << "[RTCP]     sources=" << static_cast<unsigned int>(count_or_fmt)
+                      << " first_ssrc=0x" << std::hex << first_ssrc << std::dec << "\n";
+        }
+        return;
+    }
+
+    if (pt == 204) { // APP
+        if (pkt_len >= 12) {
+            uint32_t ssrc = read_be32(&pkt[4]);
+            char name[5] = {
+                static_cast<char>(pkt[8]),
+                static_cast<char>(pkt[9]),
+                static_cast<char>(pkt[10]),
+                static_cast<char>(pkt[11]),
+                '\0'
+            };
+            std::cout << "[RTCP]     subtype=" << static_cast<unsigned int>(count_or_fmt)
+                      << " ssrc=0x" << std::hex << ssrc << std::dec
+                      << " name=" << name << "\n";
+        }
+        return;
+    }
+
+    if (pt == 205 || pt == 206) { // RTPFB / PSFB
+        if (pkt_len >= 12) {
+            uint32_t sender_ssrc = read_be32(&pkt[4]);
+            uint32_t media_ssrc = read_be32(&pkt[8]);
+            std::cout << "[RTCP]     fmt=" << static_cast<unsigned int>(count_or_fmt)
+                      << " sender_ssrc=0x" << std::hex << sender_ssrc
+                      << " media_ssrc=0x" << media_ssrc
+                      << std::dec << "\n";
+        }
+    }
+}
+
+void log_rtcp_compound(const uint8_t* data, size_t len) {
+    size_t offset = 0;
+    size_t index = 0;
+    while (offset + 4 <= len) {
+        uint16_t length_words = read_be16(&data[offset + 2]);
+        size_t pkt_len = static_cast<size_t>(length_words + 1u) * 4u;
+        if (pkt_len == 0 || offset + pkt_len > len) {
+            std::cout << "[RTCP]   [" << index << "] invalid length, remain=" << (len - offset)
+                      << " declared=" << pkt_len << "\n";
+            return;
+        }
+        log_rtcp_packet_details(&data[offset], pkt_len, index);
+        offset += pkt_len;
+        ++index;
+    }
+
+    if (offset != len) {
+        std::cout << "[RTCP]   trailing_bytes=" << (len - offset) << "\n";
+    }
+}
+
+void drain_rtcp_socket(int fd) {
+    if (fd < 0) {
+        return;
+    }
+
+    std::array<uint8_t, 2048> buf{};
+    while (true) {
+        sockaddr_in src{};
+        socklen_t src_len = sizeof(src);
+        ssize_t n = ::recvfrom(fd,
+                               reinterpret_cast<char*>(buf.data()),
+                               buf.size(),
+                               0,
+                               reinterpret_cast<sockaddr*>(&src),
+                               &src_len);
+        if (n <= 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return;
+            }
+            std::cerr << "RTCP recvfrom failed: " << std::strerror(errno) << "\n";
+            return;
+        }
+
+        char ip[INET_ADDRSTRLEN] = {0};
+        const char* ip_str = ::inet_ntop(AF_INET, &src.sin_addr, ip, sizeof(ip));
+        if (!ip_str) {
+            ip_str = "unknown";
+        }
+
+        std::cout << "[RTCP] recv: " << n
+                  << " bytes from " << ip_str << ":" << ntohs(src.sin_port)
+                  << "\n";
+        log_rtcp_compound(buf.data(), static_cast<size_t>(n));
+
+        const size_t dump_len = std::min<size_t>(static_cast<size_t>(n), 48);
+        std::cout << "[RTCP] hex:";
+        std::cout << std::hex << std::setfill('0');
+        for (size_t i = 0; i < dump_len; ++i) {
+            std::cout << " " << std::setw(2) << static_cast<unsigned int>(buf[i]);
+        }
+        if (static_cast<size_t>(n) > dump_len) {
+            std::cout << " ...";
+        }
+        std::cout << std::dec << "\n";
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
     uvgrtp::context ctx;
 
+    constexpr uint16_t kRtpPort = 53551;
+    constexpr uint16_t kRtcpPort = kRtpPort + 1;
+
     auto sess = ctx.create_session("0.0.0.0");
     auto stream = sess->create_stream(
-        5004,
+        kRtpPort,
         RTP_FORMAT_H265,
         RCE_RECEIVE_ONLY
     );
 
     if (stream) {
         (void)stream->configure_ctx(RCC_DYN_PAYLOAD_TYPE, 96);
+    } else {
+        std::cerr << "Failed to create RTP stream on port " << kRtpPort << "\n";
+        return 1;
+    }
+
+    int rtcp_fd = create_rtcp_socket(kRtcpPort);
+    if (rtcp_fd >= 0) {
+        std::cout << "Listening RTCP on UDP port " << kRtcpPort << "\n";
     }
 
     std::string out_path = (argc > 1) ? argv[1] : "nal_dump.bin";
@@ -258,8 +640,12 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> pps_nal;
 
     while (true) {
-        auto frame = stream->pull_frame();
+        auto frame = stream->pull_frame(20);
+        drain_rtcp_socket(rtcp_fd);
         if (frame) {
+            if (frame->header.ext && frame->ext) {
+                log_rtp_extension(frame);
+            }
             // frame->payload -> Annex-B HEVC NAL
             // frame->payload_len
             const uint8_t* payload = frame->payload;
@@ -351,3 +737,4 @@ int main(int argc, char** argv) {
         }
     }
 }
+
