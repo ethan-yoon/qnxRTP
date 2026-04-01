@@ -1,4 +1,2 @@
-https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge=b6sVnMoe5n1PHBiIDMVMVHEfFxgtl6fPO3saralpIBk&code_challenge_method=S256&state=A8M4hAdUoJwl8dhIbHqZf3NRwFR_mkhnFYKHrec_EJI
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&scope=user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge=jGqDu2c9qMsSyXx2ROUWRygDWT-FScuv5RM96BwsnaA&code_challenge_method=S256&state=tVaA-bl_iQtH6AXe9TmM7n_fyxszMoV7vD1QiaSNyJ4&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback
 
-
-ArP1T5BlK3uRYT2euvUH2ZCFgwa7HFwSghSbSMx30udXNAEN#A8M4hAdUoJwl8dhIbHqZf3NRwFR_mkhnFYKHrec_EJI
