@@ -1,6 +1,1 @@
-https://www.dropbox.com/oauth2/authorize?response_type=code&client_id=m044w3cvmxhzvop
-
-DT9BHd72nLMAAAAAAAABXU-HOBGQdU2O7P05PzkZmTY
-
-
-mE2cBw0SbAz80DwzbeNsoG5q3CBz6S57rLtifPwSClDb2OlW#7S6pOzM3Oa5JAGKh-s3ebfcqrWhxawxbcdN_kbFGmZw
+https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=org%3Acreate_api_key+user%3Aprofile+user%3Ainference+user%3Asessions%3Aclaude_code+user%3Amcp_servers+user%3Afile_upload&code_challenge=b6sVnMoe5n1PHBiIDMVMVHEfFxgtl6fPO3saralpIBk&code_challenge_method=S256&state=A8M4hAdUoJwl8dhIbHqZf3NRwFR_mkhnFYKHrec_EJI
