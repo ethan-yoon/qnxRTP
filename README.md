@@ -2,3 +2,4 @@ https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88
 
 
 
+7ErmQ8ZS3IJoY67ffugtAbZrB8THQkTq64RFqdVko9EHMR3V#8BQIFGHNl7i0lIFxfHIysoS09gYOmFM8g7tRBOptAJ0
